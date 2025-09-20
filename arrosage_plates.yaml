@@ -58,6 +58,7 @@ condition: []
 
 action:
   - choose:
+      # Si on a cliqué sur "Arrosée"
       - conditions:
           - condition: template
             value_template: "{{ trigger.platform == 'event' }}"
@@ -67,6 +68,7 @@ action:
             data:
               datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
     default:
+      # Vérification quotidienne
       - condition: template
         value_template: "{{ days_since|float(0) >= freq_days|int }}"
       - service: !input notify_target
@@ -79,4 +81,4 @@ action:
               {{ as_datetime(states(last_watered)).strftime('%d/%m %H:%M') }}
             {% else %} inconnu {% endif %}.
             Fréquence: tous les {{ freq_days }} jours.
-          image: "{{ plant_image if plant_image|length > 0 else '' }}"
+          image: "{{ plant_image }}"
