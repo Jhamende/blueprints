@@ -1,6 +1,6 @@
 blueprint:
   name: Plante - Rappel d'arrosage (FR + image)
-  description: "Rappel d’arrosage avec notification et photo de la plante."
+  description: "Rappel d’arrosage avec notification et photo optionnelle de la plante."
   domain: automation
   input:
     plant_name:
@@ -25,7 +25,7 @@ blueprint:
       default: "19:30:00"
       selector: { time: {} }
     plant_image:
-      name: Photo de la plante
+      name: Photo de la plante (optionnel)
       description: "Ex: /local/plantes/mon_plante.jpg ou URL https://..."
       default: ""
       selector: { text: {} }
@@ -79,7 +79,4 @@ action:
               {{ as_datetime(states(last_watered)).strftime('%d/%m %H:%M') }}
             {% else %} inconnu {% endif %}.
             Fréquence: tous les {{ freq_days }} jours.
-          {% if plant_image|length > 0 %}
-          data:
-            image: !input plant_image
-          {% endif %}
+          image: "{{ plant_image if plant_image|length > 0 else '' }}"
