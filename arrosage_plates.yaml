@@ -1,0 +1,77 @@
+blueprint:
+  name: Plante - Rappel d'arrosage (version FR)
+  description: "Rappels d’arrosage selon type de plante et date du dernier arrosage."
+  domain: automation
+  input:
+    plant_name:
+      name: Nom de la plante
+      selector: { text: {} }
+    last_watered:
+      name: Date du dernier arrosage
+      selector: { entity: { domain: input_datetime } }
+    watered_button:
+      name: Bouton 'Arrosée'
+      selector: { entity: { domain: input_button } }
+    notify_target:
+      name: Cible de notification
+      default: notify.mobile_app_sm_s918b
+      selector: { text: {} }
+    freq_days:
+      name: Fréquence d'arrosage (jours)
+      default: 7
+      selector: { number: { min: 1, max: 30, mode: box } }
+    check_time:
+      name: Heure de rappel quotidienne
+      default: "19:30:00"
+      selector: { time: {} }
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  plant_name: !input plant_name
+  last_watered: !input last_watered
+  freq_days: !input freq_days
+
+  days_since: >
+    {% if states(last_watered) in ['unknown','unavailable',''] %}
+      999
+    {% else %}
+      {{ (( now() - as_datetime(states(last_watered)) ).total_seconds() / 86400 ) | round(1) }}
+    {% endif %}
+
+trigger:
+  # Vérification quotidienne
+  - platform: time
+    at: !input check_time
+  # Bouton "Arrosée" pressé
+  - platform: event
+    event_type: state_changed
+    event_data:
+      entity_id: !input watered_button
+
+condition: []
+
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.platform == 'event' }}"
+        sequence:
+          - service: input_datetime.set_datetime
+            target: { entity_id: !input last_watered }
+            data:
+              datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+    default:
+      - condition: template
+        value_template: "{{ days_since|float(0) >= freq_days|int }}"
+      - service: !input notify_target
+        data:
+          title: "🌿 Arroser {{ plant_name }}"
+          message: >-
+            {{ plant_name }} doit être arrosée.
+            Dernier arrosage: 
+            {% if states(last_watered) not in ['unknown','unavailable',''] %}
+              {{ as_datetime(states(last_watered)).strftime('%d/%m %H:%M') }}
+            {% else %} inconnu {% endif %}.
+            Fréquence: tous les {{ freq_days }} jours.
