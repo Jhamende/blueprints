@@ -1,86 +1,171 @@
 blueprint:
-  name: 🔔 Alerte température basse (tous capteurs) + retour à la normale (option)
-  description: >
-    Notifie quand n'importe quel capteur de température (device_class: temperature)
-    passe sous un seuil défini. Option pour notifier quand la température repasse
-    au-dessus du seuil. Aucune répétition tant qu'il n'y a pas de nouveau franchissement.
+  name: Surveillance Température - Alerte Seuil Bas
+  description: >-
+    Envoie une notification lorsqu'un capteur de température descend en dessous d'un seuil défini.
+    Permet de choisir des appareils spécifiques ou d'envoyer à tous les appareils.
   domain: automation
-
+  author: Assistant Claude
+  homeassistant:
+    min_version: 2025.9.0
   input:
-    seuil:
-      name: Seuil de température (°C)
-      default: 18
+    temperature_sensors:
+      name: Capteurs de Température
+      description: Sélectionnez les capteurs de température à surveiller
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+              device_class: temperature
+    
+    temperature_threshold:
+      name: Seuil de Température (°C)
+      description: Température en dessous de laquelle déclencher l'alerte
+      default: 15
+      selector:
+        number:
+          min: -20
+          max: 50
+          step: 0.5
+          unit_of_measurement: "°C"
+    
+    notification_mode:
+      name: Mode de Notification
+      description: Choisir comment envoyer les notifications
+      default: "specific_devices"
+      selector:
+        select:
+          options:
+            - label: "Appareils spécifiques"
+              value: "specific_devices"
+            - label: "Tous les appareils"
+              value: "all_devices"
+    
+    notification_devices:
+      name: Appareils de Notification
+      description: Appareils qui recevront les notifications (uniquement si "Appareils spécifiques" est sélectionné)
+      default: []
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: mobile_app
+    
+    notification_title:
+      name: Titre de la Notification
+      description: Titre personnalisé pour la notification
+      default: "🌡️ Alerte Température Basse"
+      selector:
+        text:
+    
+    notification_message:
+      name: Message de Notification
+      description: >-
+        Message personnalisé. Variables disponibles:
+        {{sensor_name}} - Nom du capteur
+        {{temperature}} - Température actuelle  
+        {{threshold}} - Seuil configuré
+      default: "Le capteur {{sensor_name}} indique {{temperature}}°C (seuil: {{threshold}}°C)"
+      selector:
+        text:
+          multiline: true
+    
+    cooldown_minutes:
+      name: Délai entre Notifications (minutes)
+      description: Évite le spam de notifications pour le même capteur
+      default: 30
       selector:
         number:
           min: 5
-          max: 30
-          unit_of_measurement: °C
-          mode: slider
+          max: 240
+          step: 5
+          unit_of_measurement: "min"
 
-    notify_devices:
-      name: Appareils à notifier (mobile_app)
-      description: Sélectionne un ou plusieurs appareils mobiles à notifier
-      selector:
-        device:
-          integration: mobile_app
-          multiple: true
-
-    notify_recovery:
-      name: Notifier le retour à la normale (≥ seuil)
-      description: Envoie une notification quand la température repasse au-dessus du seuil
-      default: false
-      selector:
-        boolean: {}
-
-mode: parallel
-max_exceeded: silent
+variables:
+  notification_mode_var: !input notification_mode
+  notification_devices_var: !input notification_devices
+  threshold: !input temperature_threshold
+  title: !input notification_title
+  message_template: !input notification_message
+  cooldown: !input cooldown_minutes
 
 trigger:
-  - platform: state
+  - platform: numeric_state
+    entity_id: !input temperature_sensors
+    below: !input temperature_threshold
+    for:
+      minutes: 2
 
-# On filtre ici : seulement les capteurs de température et seulement lors d'un franchissement de seuil
 condition:
   - condition: template
-    value_template: >
-      {% set s = trigger.to_state %}
-      {% set f = trigger.from_state %}
-      {{ s is not none and f is not none
-         and s.domain == 'sensor'
-         and s.attributes.device_class == 'temperature'
-         and s.state not in ['unknown','unavailable','None','nan']
-         and f.state not in ['unknown','unavailable','None','nan'] }}
+    value_template: >-
+      {% set sensor_id = trigger.entity_id %}
+      {% set last_trigger_var = 'last_temp_alert_' ~ sensor_id.replace('.', '_') %}
+      {% set last_trigger = as_timestamp(states('input_datetime.' ~ last_trigger_var), 0) %}
+      {% set current_time = as_timestamp(now()) %}
+      {% set cooldown_seconds = (cooldown * 60) %}
+      {{ (current_time - last_trigger) > cooldown_seconds }}
 
 action:
+  # Mise à jour du timestamp pour ce capteur
+  - service: input_datetime.set_datetime
+    target:
+      entity_id: "input_datetime.last_temp_alert_{{ trigger.entity_id.replace('.', '_') }}"
+    data:
+      datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}"
+    continue_on_error: true
+  
+  # Préparation des variables du message
   - variables:
-      seuil: "{{ (blueprint.inputs.seuil | float(18)) }}"
-      t_to: "{{ trigger.to_state.state | float(0) }}"
-      t_from: "{{ trigger.from_state.state | float(0) }}"
-      piece: "{{ area_name(trigger.entity_id) or state_attr(trigger.entity_id, 'friendly_name') or trigger.entity_id }}"
-      recovery_on: "{{ blueprint.inputs.notify_recovery | bool }}"
-
+      sensor_name: "{{ state_attr(trigger.entity_id, 'friendly_name') or trigger.entity_id }}"
+      temperature: "{{ trigger.to_state.state | round(1) }}"
+      final_message: >-
+        {{ message_template 
+           | replace('{{sensor_name}}', sensor_name)
+           | replace('{{temperature}}', temperature)
+           | replace('{{threshold}}', threshold | string) }}
+  
+  # Notification selon le mode choisi
   - choose:
-      # 🔻 CAS 1 : Passage sous le seuil (>= seuil -> < seuil)
-      - conditions: >
-          {{ t_from >= seuil and t_to < seuil }}
+      # Mode: Appareils spécifiques
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_mode_var == 'specific_devices' }}"
         sequence:
           - repeat:
-              for_each: !input notify_devices
+              for_each: "{{ notification_devices_var }}"
               sequence:
-                - device_id: "{{ repeat.item }}"
-                  domain: mobile_app
-                  type: notify
-                  title: "Alerte température"
-                  message: "🥶 {{ piece }} est à {{ '%.1f'|format(t_to) }}°C (sous {{ seuil }}°C)."
+                - service: notify.mobile_app_{{ device_attr(repeat.item, 'name') | lower | replace(' ', '_') | replace('-', '_') }}
+                  data:
+                    title: "{{ title }}"
+                    message: "{{ final_message }}"
+                    data:
+                      priority: high
+                      notification_icon: "mdi:thermometer-alert"
+                      color: "#FF5722"
+                      channel: "Temperature Alerts"
+                      importance: high
+                  continue_on_error: true
+      
+      # Mode: Tous les appareils  
+      - conditions:
+          - condition: template
+            value_template: "{{ notification_mode_var == 'all_devices' }}"
+        sequence:
+          - service: notify.notify
+            data:
+              title: "{{ title }}"
+              message: "{{ final_message }}"
+              data:
+                priority: high
+                notification_icon: "mdi:thermometer-alert"
+                color: "#FF5722"
+                channel: "Temperature Alerts"
+                importance: high
 
-      # ✅ CAS 2 : Retour à la normale (optionnel) (< seuil -> >= seuil)
-      - conditions: >
-          {{ recovery_on and t_from < seuil and t_to >= seuil }}
-        sequence:
-          - repeat:
-              for_each: !input notify_devices
-              sequence:
-                - device_id: "{{ repeat.item }}"
-                  domain: mobile_app
-                  type: notify
-                  title: "Température OK"
-                  message: "✅ {{ piece }} est remontée à {{ '%.1f'|format(t_to) }}°C (≥ {{ seuil }}°C)."
+  # Log de l'événement
+  - service: logbook.log
+    data:
+      name: "Surveillance Température"
+      message: "Alerte déclenchée pour {{ sensor_name }}: {{ temperature }}°C (seuil: {{ threshold }}°C)"
+      entity_id: "{{ trigger.entity_id }}"
