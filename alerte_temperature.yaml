@@ -1,1 +1,86 @@
+blueprint:
+  name: 🔔 Alerte température basse (tous capteurs) + retour à la normale (option)
+  description: >
+    Notifie quand n'importe quel capteur de température (device_class: temperature)
+    passe sous un seuil défini. Option pour notifier quand la température repasse
+    au-dessus du seuil. Aucune répétition tant qu'il n'y a pas de nouveau franchissement.
+  domain: automation
 
+  input:
+    seuil:
+      name: Seuil de température (°C)
+      default: 18
+      selector:
+        number:
+          min: 5
+          max: 30
+          unit_of_measurement: °C
+          mode: slider
+
+    notify_devices:
+      name: Appareils à notifier (mobile_app)
+      description: Sélectionne un ou plusieurs appareils mobiles à notifier
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+
+    notify_recovery:
+      name: Notifier le retour à la normale (≥ seuil)
+      description: Envoie une notification quand la température repasse au-dessus du seuil
+      default: false
+      selector:
+        boolean: {}
+
+mode: parallel
+max_exceeded: silent
+
+trigger:
+  - platform: state
+
+# On filtre ici : seulement les capteurs de température et seulement lors d'un franchissement de seuil
+condition:
+  - condition: template
+    value_template: >
+      {% set s = trigger.to_state %}
+      {% set f = trigger.from_state %}
+      {{ s is not none and f is not none
+         and s.domain == 'sensor'
+         and s.attributes.device_class == 'temperature'
+         and s.state not in ['unknown','unavailable','None','nan']
+         and f.state not in ['unknown','unavailable','None','nan'] }}
+
+action:
+  - variables:
+      seuil: "{{ (blueprint.inputs.seuil | float(18)) }}"
+      t_to: "{{ trigger.to_state.state | float(0) }}"
+      t_from: "{{ trigger.from_state.state | float(0) }}"
+      piece: "{{ area_name(trigger.entity_id) or state_attr(trigger.entity_id, 'friendly_name') or trigger.entity_id }}"
+      recovery_on: "{{ blueprint.inputs.notify_recovery | bool }}"
+
+  - choose:
+      # 🔻 CAS 1 : Passage sous le seuil (>= seuil -> < seuil)
+      - conditions: >
+          {{ t_from >= seuil and t_to < seuil }}
+        sequence:
+          - repeat:
+              for_each: !input notify_devices
+              sequence:
+                - device_id: "{{ repeat.item }}"
+                  domain: mobile_app
+                  type: notify
+                  title: "Alerte température"
+                  message: "🥶 {{ piece }} est à {{ '%.1f'|format(t_to) }}°C (sous {{ seuil }}°C)."
+
+      # ✅ CAS 2 : Retour à la normale (optionnel) (< seuil -> >= seuil)
+      - conditions: >
+          {{ recovery_on and t_from < seuil and t_to >= seuil }}
+        sequence:
+          - repeat:
+              for_each: !input notify_devices
+              sequence:
+                - device_id: "{{ repeat.item }}"
+                  domain: mobile_app
+                  type: notify
+                  title: "Température OK"
+                  message: "✅ {{ piece }} est remontée à {{ '%.1f'|format(t_to) }}°C (≥ {{ seuil }}°C)."
